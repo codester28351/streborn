@@ -6,14 +6,14 @@ require (
 	github.com/JRpersonal/streborn v0.0.0
 	github.com/skip2/go-qrcode v0.0.0-20200617195104-da1b6568686e
 	github.com/tc-hib/winres v0.3.1
-	github.com/wailsapp/wails/v2 v2.14.0
+	github.com/wailsapp/wails/v2 v2.15.0
 	golang.org/x/crypto v0.55.0
 	golang.org/x/sys v0.47.0
 )
 
 require github.com/grandcat/zeroconf v1.0.0 // indirect
 
-require github.com/miekg/dns v1.1.72 // indirect
+require github.com/miekg/dns v1.1.73 // indirect
 
 replace github.com/JRpersonal/streborn => ..
 
@@ -45,9 +45,6 @@ require (
 	github.com/wailsapp/go-webview2 v1.0.22 // indirect
 	github.com/wailsapp/mimetype v1.4.1 // indirect
 	golang.org/x/image v0.41.0 // indirect
-	golang.org/x/mod v0.38.0 // indirect
 	golang.org/x/net v0.58.0 // indirect
-	golang.org/x/sync v0.22.0 // indirect
 	golang.org/x/text v0.41.0 // indirect
-	golang.org/x/tools v0.48.0 // indirect
 )

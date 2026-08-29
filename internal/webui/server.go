@@ -360,6 +360,11 @@ type Server struct {
 	// mirrorKickPending is true between scheduling a kick and sending it, so a
 	// burst of plays produces one reconcile rather than one per play.
 	mirrorKickPending atomic.Bool
+	// defaultFormMu/lastDefaultFormAt rate-limit the play-triggered re-form of
+	// the persisted default group (zones_default_group.go), so preset zapping
+	// does not drive the firmware with back-to-back setZone rounds.
+	defaultFormMu     sync.Mutex
+	lastDefaultFormAt time.Time
 
 	// wedge tracks the "box accepts transport pushes but never plays" state
 	// that only a power-cycle clears; streamActivityFn (the stream proxy's
@@ -498,6 +503,15 @@ type Server struct {
 	recentMu          sync.Mutex
 	recentRadioCard   recentCardCtx
 	recentSpotifyCard recentCardCtx
+	// recentRadioLastTrack is the last ICY title recorded under the CURRENT
+	// radio card, and recentRadioStaleTrack is the PREVIOUS card's last title,
+	// carried across a station change so the first ICY title after the switch is
+	// suppressed when the box's now-playing text still lags on the old song
+	// (#755: KLove's "This is Our God" showed under Exclusively Rush because its
+	// ICY arrived a beat after the station change). Spotify already had this
+	// de-dup; radio did not.
+	recentRadioLastTrack  string
+	recentRadioStaleTrack string
 	// recentQueueCard remembers the DLNA folder currently playing as an
 	// auto-advancing queue, so each track the queue pushes is recorded under one
 	// "library" card (#220: folder plays were never added to Recently played).
@@ -773,6 +787,7 @@ func (s *Server) Run(ctx context.Context) error {
 	mux.HandleFunc("/api/library/search", s.handleLibrarySearch)
 	mux.HandleFunc("/api/library/servers", s.handleLibraryServers)
 	mux.HandleFunc("/api/library/browse", s.handleLibraryBrowse)
+	mux.HandleFunc("/api/library/locate", s.handleLibraryLocate)
 	mux.HandleFunc("/api/box/presets", s.handleBoxPresets)
 	mux.HandleFunc("/api/box/presets/recall", s.handleBoxPresetRecall)
 	mux.HandleFunc("/api/box/snapshot", s.handleBoxSnapshot)

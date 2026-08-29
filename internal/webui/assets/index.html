@@ -447,16 +447,16 @@ html.a11y-contrast .tabbar button[aria-selected="true"] { outline:2px solid var(
 <div class="card">
 <div class="label" id="lblPlayback">Playback</div>
 <div class="row c2" style="margin-bottom:8px">
-<button class="btn" id="btnPrev" onclick="skip(this,'/api/prev')" style="gap:6px" aria-label="Previous" title="Previous"><span aria-hidden="true" style="font-size:19px">&#9198;&#65039;</span><span id="btnPrevLbl">Previous</span></button>
-<button class="btn" id="btnNext" onclick="skip(this,'/api/next')" style="gap:6px" aria-label="Next" title="Next"><span id="btnNextLbl">Next</span><span aria-hidden="true" style="font-size:19px">&#9197;&#65039;</span></button>
+<button class="btn" id="btnPrev" onclick="skip(this,'/api/prev')" style="gap:12px; justify-content: flex-start; padding-left: 16px;" aria-label="Previous" title="Previous"><span aria-hidden="true" style="font-size:19px">&#9198;&#65039;</span><span id="btnPrevLbl">Previous</span></button>
+<button class="btn" id="btnNext" onclick="skip(this,'/api/next')" style="gap:12px; justify-content: flex-start; padding-left: 16px;" aria-label="Next" title="Next"><span aria-hidden="true" style="font-size:19px">&#9197;&#65039;</span><span id="btnNextLbl">Next</span></button>
 </div>
 <div class="row c2" style="margin-top:8px;margin-bottom:8px">
-<button class="btn" id="btnShuffle" onclick="toggleShuffle()" style="gap:6px" aria-pressed="false" aria-label="Shuffle" title="Shuffle"><span aria-hidden="true" style="font-size:17px">&#128256;</span><span id="btnShuffleLbl">Shuffle</span></button>
-<button class="btn" id="btnRepeat" onclick="cycleRepeat()" style="gap:6px" aria-pressed="false" aria-label="Repeat" title="Repeat"><span aria-hidden="true" style="font-size:17px">&#128257;</span><span id="btnRepeatLbl">Repeat</span><span id="btnRepeatOne" style="font-weight:700" hidden>1</span></button>
+<button class="btn" id="btnShuffle" onclick="toggleShuffle()" style="gap:12px; justify-content: flex-start; padding-left: 16px;" aria-pressed="false" aria-label="Shuffle" title="Shuffle"><span aria-hidden="true" style="font-size:17px">&#128256;</span><span id="btnShuffleLbl">Shuffle</span></button>
+<button class="btn" id="btnRepeat" onclick="cycleRepeat()" style="gap:12px; justify-content: flex-start; padding-left: 16px;" aria-pressed="false" aria-label="Repeat" title="Repeat"><span aria-hidden="true" style="font-size:17px">&#128257;</span><span id="btnRepeatLbl">Repeat</span><span id="btnRepeatOne" style="font-weight:700" hidden>1</span></button>
 </div>
 <div class="row c2" style="margin-top:8px">
-<button class="btn" id="btnPause" onclick="togglePlayPause(this)" style="gap:6px" aria-label="Pause" title="Pause"><span id="btnPauseIcon" aria-hidden="true" style="font-size:19px">&#9208;&#65039;</span><span id="btnPauseLbl">Pause</span></button>
-<button class="btn" id="btnStop" onclick="pp(this,'/api/stop')" style="gap:6px" aria-label="Stop" title="Stop"><span aria-hidden="true" style="font-size:19px">&#9209;&#65039;</span><span id="btnStopLbl">Stop</span></button>
+<button class="btn" id="btnPause" onclick="togglePlayPause(this)" style="gap:12px; justify-content: flex-start; padding-left: 16px;" aria-label="Pause" title="Pause"><span id="btnPauseIcon" aria-hidden="true" style="font-size:19px">&#9208;&#65039;</span><span id="btnPauseLbl">Pause</span></button>
+<button class="btn" id="btnStop" onclick="pp(this,'/api/stop')" style="gap:12px; justify-content: flex-start; padding-left: 16px;" aria-label="Stop" title="Stop"><span aria-hidden="true" style="font-size:19px">&#9209;&#65039;</span><span id="btnStopLbl">Stop</span></button>
 </div>
 </div>
 
@@ -1218,10 +1218,31 @@ async function togglePower() {
 }
 // setSource selects an input and keeps that button highlighted until another is chosen.
 async function setSource(s, btn, account) {
+  var prevActive = document.querySelector('#inputs .btn.active');
   document.querySelectorAll('#inputs .btn').forEach(function(e){ e.classList.remove('active'); });
   if (btn) btn.classList.add('active');
-  await api('/api/box/source','PUT',{source:s, sourceAccount: account || ''});
+  var ok = await api('/api/box/source','PUT',{source:s, sourceAccount: account || ''});
+  if (ok === null) {
+    // The box refused the switch (an input this model does not have, e.g. an
+    // ST20 variant with no Bluetooth answers 409 source_unavailable) or is
+    // unreachable: api() returns null for both. Restore the prior highlight and
+    // say so, rather than leaving a button lit for an input that never engaged.
+    if (btn) btn.classList.remove('active');
+    if (prevActive) prevActive.classList.add('active');
+    flashInputNote(T.musicLibFailed);
+    return;
+  }
   setTimeout(refreshStatus, 1200);
+}
+// flashInputNote briefly shows a short message in the Input label, then restores
+// it. Reuses the existing label so the phone page needs no separate toast layer.
+var inputNoteTimer = null;
+function flashInputNote(msg) {
+  var el = document.getElementById('lblInput');
+  if (!el) return;
+  el.textContent = msg;
+  if (inputNoteTimer) clearTimeout(inputNoteTimer);
+  inputNoteTimer = setTimeout(function(){ el.textContent = T.input; }, 2600);
 }
 
 // STR's own sources and the firmware's bookkeeping entries are not inputs a
@@ -1724,6 +1745,13 @@ async function refreshStatus() {
   const proxySrc = upSrc === 'UPNP' || upSrc === 'LOCAL_INTERNET_RADIO';
   const song = (playing && proxySrc) ? await currentSong() : '';
   setNow(bigName, song || human[state] || (state ? state.replace('_STATE','').toLowerCase() : T.stopped));
+  // Keep the Recently-played list current when the song or station changes from
+  // ANY source (a hardware button, the desktop app, or an ICY song change), not
+  // only after a play from this page (#761). The box records each play itself;
+  // the page just re-reads its ring when the now-playing line moves. No extra
+  // polling: this rides the status cadence that already runs.
+  var nowSig = bigName + '|' + song;
+  if (playing && nowSig !== lastRecentSig) { lastRecentSig = nowSig; try { loadRecent(); } catch (e) {} }
   tp.playing = (state === 'PLAY_STATE' || state === 'BUFFERING_STATE');
   var key = name + '|' + src;
   if (key !== tp.key) { tp.key = key; tp.sec = 0; tp.dur = 0; tp.at = 0; }
@@ -1734,6 +1762,9 @@ async function refreshStatus() {
 // cadence and interpolated forward in between, so the bar moves like a clock.
 // Radio reports no length: then only the elapsed time is shown, with no bar.
 var tp = { sec: 0, dur: 0, at: 0, key: '', busy: false, playing: false };
+// Last now-playing signature the Recently list was refreshed for (#761), so a
+// song/station change re-reads the ring exactly once.
+var lastRecentSig = '';
 function fmtClock(sec) {
   sec = Math.max(0, Math.floor(sec));
   return Math.floor(sec / 60) + ':' + String(sec % 60).padStart(2, '0');
@@ -2859,11 +2890,13 @@ async function loadRecent() {
     sub.textContent = [e.track, e.account].filter(Boolean).join(' \u00b7 ');
     nm.appendChild(sub);
     row.appendChild(nm);
-    /* Replay only what this page can honestly start: a radio card carries a
-       stream URL the /api/play path accepts. Spotify needs the engine recall
-       (a preset), and a NAS track without its mime would fall into the radio
-       proxy and loop, so those rows are history, not buttons. */
-    if (e.source === 'radio' && e.cardURL && e.cardURL.indexOf('http') === 0) {
+    /* Replay what this page can honestly start: a radio card carries a stream
+       URL the /api/play path accepts, and a media-server (upnp) card carries its
+       NAS HTTP location, which replays through the very same mime-less path the
+       desktop app already uses for these cards (true parity, so no new server
+       behaviour). Spotify needs the engine recall (a preset), so those rows stay
+       history, not buttons. */
+    if ((e.source === 'radio' || e.source === 'upnp') && e.cardURL && e.cardURL.indexOf('http') === 0) {
       var b = document.createElement('button');
       b.className = 'btn'; b.type = 'button';
       b.setAttribute('aria-label', T.play + ': ' + (e.cardName || ''));

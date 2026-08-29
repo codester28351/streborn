@@ -226,6 +226,7 @@ import {
   noticeDismissed,
   activeSlotFromLocation,
   orionStationPayload,
+  nativeSlotStale,
   clearNoticeDismissal,
   balanceLabel,
   shouldAdoptPresetArt,
@@ -247,10 +248,12 @@ import {
   sameBoxIdentity,
   parsePlayRejection,
   resolveBoxByRef,
-  stereoPairOf,
+  stereoPairsOf,
+  inStereoPair,
   pairMemberBoxes,
   balanceSourceBox,
 } from './groups.js';
+import { pairDisplayName } from './stereoNames.js';
 
 // Pure decisions of the search flow (URL-paste detection, the synthetic
 // play-this-URL card, the relaxed-filters hint) live in searchflow.js so
@@ -2373,29 +2376,40 @@ function renderBoxSelect() {
   // speakers. That is misleading twice over: they play as one, and pressing a
   // preset on the pair is refused by the firmware (#528) with nothing on screen
   // explaining why. Framing them like a group says what is going on.
-  const livePair = stereoPairOf(zlMap);
+  const livePairs = stereoPairsOf(zlMap);
   // Balance is read once when the selected speaker changes, never on the status
   // poll (the speaker hangs on that endpoint while it is asleep). Pairing and
   // unpairing happen without changing the selection, so without this the value
   // would stay stale, or stay hidden for a pair formed after the speaker was
-  // picked. Keyed on the pair identity, so an unchanged pair re-reads nothing.
-  const pairStamp = livePair ? `${livePair.id}|${livePair.master}` : '';
+  // picked. Keyed over ALL pairs, so a second pair forming after a speaker was
+  // selected still re-reads once; an unchanged set re-reads nothing.
+  const pairStamp = livePairs.map(p => `${p.id}|${p.master}`).sort().join(',');
   if (pairStamp !== state.lastBalancePair) {
     state.lastBalancePair = pairStamp;
     setTimeout(() => { refreshBalance().catch(() => {}); }, 0);
   }
-  const pairBoxes = pairMemberBoxes(livePair, state.boxes).map(x => x.box).filter(Boolean);
-  const pairHosts = new Set(pairBoxes.map(b => b.host));
-  const pairMasterBox = pairBoxes.find(b =>
-    livePair && String(b.deviceID || '').toUpperCase() === String(livePair.master || '').toUpperCase()) || pairBoxes[0] || null;
-  const pairKey = pairMasterBox ? String(pairMasterBox.deviceID || '').toUpperCase() : '';
+  // Every live pair frames under its own key (its master box's discovered
+  // deviceID). pairHostToKey routes any paired box to its frame; pairByKey
+  // gives the frame its pair, so each pair shows its OWN stored name. Matched on
+  // host, not deviceID: a two-chip chassis announces a different id over
+  // discovery than the one the firmware puts in the pair.
+  const pairHostToKey = new Map();
+  const pairByKey = new Map();
+  for (const p of livePairs) {
+    const boxes = pairMemberBoxes(p, state.boxes).map(x => x.box).filter(Boolean);
+    const masterBox = boxes.find(b =>
+      String(b.deviceID || '').toUpperCase() === String(p.master || '').toUpperCase()) || boxes[0] || null;
+    const key = masterBox ? String(masterBox.deviceID || '').toUpperCase() : '';
+    if (!key) continue;
+    pairByKey.set(key, p);
+    for (const b of boxes) pairHostToKey.set(b.host, key);
+  }
   const masterOf = (b) => {
     if (b.kind === 'stock') return '';
     const z = zoneMasterOf(b.deviceID, zlMap);
     if (z) return z;
-    // Matched on host, not deviceID: a two-chip chassis announces a different
-    // id over discovery than the one the firmware puts in the pair.
-    if (pairKey && pairHosts.has(b.host)) return pairKey;
+    const k = pairHostToKey.get(b.host);
+    if (k) return k;
     return '';
   };
   const memberCount = {};
@@ -2519,11 +2533,12 @@ function renderBoxSelect() {
       // A stereo pair gets its own wording and its own mark. Reusing the
       // multiroom label would call two speakers acting as one channel pair a
       // "group led by X", which is not what it is.
-      const isPair = pairKey && m === pairKey;
+      const framePair = pairByKey.get(m) || null;
+      const isPair = !!framePair;
       const pairIcon = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" width="12" height="12" aria-hidden="true"><rect x="3" y="3" width="7" height="18" rx="1"></rect><rect x="14" y="3" width="7" height="18" rx="1"></rect></svg>';
       const zoneIcon = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" width="12" height="12" aria-hidden="true"><path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"></path><circle cx="9" cy="7" r="4"></circle><path d="M23 21v-2a4 4 0 0 0-3-3.87"></path><path d="M16 3.13a4 4 0 0 1 0 7.75"></path></svg>';
       const groupLabel = groupName
-        ? `<span class="box-group-label" title="${escapeAttr(isPair ? t('speaker.stereoPairTitle') : t('speaker.groupLabelTitle', { name: groupName }))}">${isPair ? pairIcon : zoneIcon} ${escapeHtml(isPair ? t('multiroom.stereoHeading') : groupName)}</span>`
+        ? `<span class="box-group-label" title="${escapeAttr(isPair ? t('speaker.stereoPairTitle') : t('speaker.groupLabelTitle', { name: groupName }))}">${isPair ? pairIcon : zoneIcon} ${escapeHtml(isPair ? (pairDisplayName(framePair, renderBoxSelect) || t('multiroom.stereoHeading')) : groupName)}</span>`
         : '';
       html += `<div class="box-group box-group-c${colorOf[m]}">${groupLabel}${members.map(pill).join('')}</div>`;
     }
@@ -5447,19 +5462,26 @@ function renderPresets() {
   // real stream URL of the source slot. That lets us mark sibling
   // slots with the same station as active too. Otherwise only the
   // single slot named in /stream/<n> would light up.
+  // The station the speaker is ACTUALLY playing, decoded from the native ORION
+  // descriptor (null for Spotify or a bare /stream/<n> proxy). While the box's
+  // own preset list is re-synced under a stale recall, this is the only reliable
+  // identity of the live audio, so a slot whose stored station has since changed
+  // can be told apart from the one still coming out of the speaker (#758).
+  const orionNow = orionStationPayload(state.nowLocation);
+  const playingURL = orionNow && orionNow.streamUrl ? decodeProxyUrl(orionNow.streamUrl) : '';
+  const playingName = orionNow && typeof orionNow.name === 'string' ? orionNow.name : '';
   let activeStreamURL = null;
   if (activeSlot !== null) {
     const ap = state.presets.find(x => x.slot === activeSlot);
     if (ap) activeStreamURL = ap.stream_url;
-  } else {
+  } else if (playingURL) {
     // A native preset whose descriptor carries the RAW proxy form rather than a
     // per-slot one: the slot lookup finds nothing, and the location is the
     // descriptor rather than a URL, so neither of the matches above can fire
     // and no tile lit up while the speaker was plainly playing one of them.
     // The real station URL is inside the descriptor, and that does match what
     // the key holds.
-    const orion = orionStationPayload(state.nowLocation);
-    if (orion && orion.streamUrl) activeStreamURL = decodeProxyUrl(orion.streamUrl);
+    activeStreamURL = playingURL;
   }
   for (let i = 1; i <= 6; i++) {
     const p = state.presets.find(x => x.slot === i);
@@ -5467,7 +5489,7 @@ function renderPresets() {
     // (e.g. a Deezer playlist set on the speaker). Show it so the user sees and
     // can recall it, instead of a misleading "empty" tile.
     const bp = !p ? (state.boxPresets || []).find(x => x.slot === i) : null;
-    const isActive = p && state.nowLocation && (
+    const baseActive = p && state.nowLocation && (
       p.stream_url === state.nowLocation ||
       (activeSlot !== null && p.slot === activeSlot) ||
       (activeStreamURL && p.stream_url === activeStreamURL) ||
@@ -5476,6 +5498,17 @@ function renderPresets() {
       // location. Never match on the preset name (see nowSpotifySlot note above).
       (p.type === 'spotify' && spotifyPlaying && state.nowSpotifySlot != null && p.slot === state.nowSpotifySlot)
     );
+    // While a native descriptor is playing, drop a slot whose stored station no
+    // longer matches the live audio: a preset list re-synced from the box remote
+    // must not leave the freshly-changed tile lit as "playing" (#758). Only bites
+    // when the speaker plays native radio (orionNow set) and the identity is
+    // known and differs; otherwise baseActive stands unchanged.
+    const isActive = baseActive && !(orionNow && nativeSlotStale({
+      presetName: p && p.name,
+      presetUrl: p && p.stream_url,
+      playingName,
+      playingUrl: playingURL,
+    }));
     const hasErr = !!state.presetErrors[i];
     const div = document.createElement('div');
     div.className = 'preset' + (p || bp ? '' : ' empty') + (isActive ? ' playing' : '') + (hasErr ? ' error' : '') + (bp ? ' box-native' : '');
@@ -6469,7 +6502,11 @@ async function refreshBalance() {
   if (!el) return;
   const selected = state.currentBox;
   if (!selected || selected.kind === 'stock') { el.classList.add('hidden'); return; }
-  const box = balanceSourceBox(selected, stereoPairOf(state.zoneLive || {}), state.boxes) || selected;
+  // Resolve the pair that CONTAINS the selected box, not just the first: either
+  // half of any pair must show that pair's balance (#70), which was only true
+  // for the first pair while stereoPairOf returned it alone.
+  const balPair = stereoPairsOf(state.zoneLive || {}).find(p => inStereoPair(selected, p)) || null;
+  const box = balanceSourceBox(selected, balPair, state.boxes) || selected;
   if (box.kind === 'stock') { el.classList.add('hidden'); return; }
   const v = await readBoxBalance(box);
   if (v === null) { el.classList.add('hidden'); return; }
